@@ -1,0 +1,222 @@
+<html>
+<body>
+<title>Multi-peer WebRTC Demo</title>
+<table style="width:100%; height:100%">
+    <tr>
+        <td style="text-align:center">
+            <video id="mainVideo" muted autoplay style="width:800px; height:600px; border:1px"></video>
+        </td>
+        <td style="width:200px; vertical-align:top; overflow:auto" >
+            <div id="peersList"></div>
+        </td>
+    </tr>
+    <tr style="height:20px">
+        <td colspan="2" style="text-align:center">
+            <div id="roomId"></div>
+        </td>
+    </tr>
+</table>
+<script src="//rawgithub.com/broofa/node-uuid/master/uuid.js"></script>
+<script src="//ajax.googleapis.com/ajax/libs/jquery/2.0.2/jquery.min.js"></script>
+<script src="//cdn.pubnub.com/pubnub-3.5.0.min.js"></script>
+<script src="peer.js"></script>
+<script src="channel.js"></script>
+<script>
+var room = null; // room Id
+var localID = null; // unique ID for self
+var localChannel = null; // unique channel ID for self
+var localStream = null; // local MediaStream
+var peers = {}; // peers map
+var conflictingPeers = {};
+var options = null; // GET parameters
+
+// Timing values
+var PING_INTERVAL = 10000;
+var TIMER_INTERVAL = 30000;
+var MAX_PING_DELAY = 6;
+
+$(document).ready(function() {
+    if (!window.chrome) { // using Chrome specific api call for now
+        $("body").html("Supported only on Chrome");
+        return;
+    }
+    loadVideo();
+});
+
+function loadVideo() {
+    navigator.webkitGetUserMedia({audio : true, video : true}, successCallback, errorCallback);
+
+    function successCallback(stream) {
+        localStream = stream;
+        startCall();
+    }
+    
+    function errorCallback(error) {
+        console.error('An error occurred: [CODE ' + error.code + ']');
+    }
+}
+
+function startCall() {
+    // Retrieve GET parameters
+    options = decodeURIComponent(window.location.search.slice(1))
+                    .split('&')
+                    .reduce(function(a, b) {
+                         b = b.split('=');
+                         a[b[0]] = b[1];
+                         return a;
+                     }, {});
+
+    // The "room" parameter if present will contain the unique room ID
+    if (!options["room"]) { // Original host
+        isOriginalHost = true;
+        localID = room = uuid.v4();
+    } else {
+        room = options["room"];
+        localID = uuid.v4();
+    }
+    // Each peer in the call listens on the global room channel and a unique channel local to itself
+    listen(room, processMessage, verboseLog);
+    localChannel = room + "_" + localID;
+    listen(localChannel, processMessage, verboseLog);
+    
+    // Send ping messages periodically to each peer in the room
+    // This serves as first contact as well as heartbeat signals
+    send(room, {ping : true});
+    setInterval(function() {send(room, {ping : true})}, PING_INTERVAL);
+    
+    $(window).on("beforeunload", hangup);
+    
+    // Generate the link to be used by other peers to join the call
+    var link = document.URL.split("?")[0] + "?room=" + room;
+    if (typeof options["v"] !== "undefined") { // check if verbose
+        link += "&v=1";
+    }
+    var $linkElement = $("<a/>", {
+                            href : link,
+                            target: '_blank',
+                            html: link
+                            });
+    $("#roomId").append("Waiting for peers at ");
+    $("#roomId").append($linkElement);
+    showVideo(localID, window.webkitURL.createObjectURL(localStream), true);
+}
+
+// send a bye signal to the room on local window close
+function hangup() {
+    send(room, {bye : true});
+}
+
+// called for rendering the video tag for each peer
+function showVideo(peerID, videoURI, self) {
+    verboseLog(peerID + ": showVideo");
+    var $videoTag = $("<video/>", {
+                                id : peerID,
+                                src : videoURI,
+                                autoplay: true,
+                                style: 'width: 150px; height: 112px; border: 5px solid gray'
+                                });
+                                
+    if (self) { // mute if self
+        $videoTag.prop('muted', true);
+    } else { // show controls for others for muting if required
+        $videoTag.prop('controls', true);
+        if (!$("#mainVideo").prop('src')) {
+            $("#mainVideo").prop('src', videoURI);
+        }
+    }
+    $videoTag.click(function() {
+        $("#mainVideo").prop('src', videoURI);
+        });
+    // display video
+    $("#peersList").prepend($videoTag);
+}
+
+// called when a peer disconnects
+function removePeer(peerID) {
+    verboseLog(peerID + ": removePeer");
+    if (peers[peerID]) {
+        peers[peerID].close();
+        clearInterval(peers[peerID].heartbeatInterval);
+        if ($("#mainVideo").prop("src") === $("#"+peerID).prop("src")) {
+            $("#mainVideo").prop('src', "");
+        }
+        // Remove video tag
+        $("#"+peerID).remove();
+        delete peers[peerID];
+    }
+}
+
+// send message on a channel
+function send(channel, message) {
+    message.peerID = localID;
+    message.replyChannel = localChannel;
+    sendOnChannel(channel, message, verboseLog);
+}
+
+// returns a watchdog timer method for a peer
+function updatePeerTimer(peerID) {
+    return function() {
+        verboseLog(peerID + ": updateHeartbeat");
+        if (peers[peerID].lastHeartbeat === MAX_PING_DELAY) { // long time since last heartbeat, drop peer
+            removePeer(peerID);
+        } else {
+            peers[peerID].lastHeartbeat++;
+        }
+    }
+}
+
+// log
+function verboseLog(message) {
+    if (typeof options["v"] !== "undefined") { // log if verbose
+        console.log(message);
+    }
+}
+
+function createPeerAndStart(peerID, peerChannel) {
+    if(peers[peerID]) { // possible deadlock
+        return -2;
+    }
+    // create a WRTCPeer object for the peer
+    var newPeer = new WRTCPeer(peerID, peerChannel, localStream, send, showVideo, removePeer, verboseLog);
+    var ret = newPeer.startConnection();
+    if (ret === 0) {
+        // set up watchdog timer for the peer
+        newPeer.heartbeatInterval = setInterval(updatePeerTimer(peerID), TIMER_INTERVAL);
+        peers[peerID] = newPeer;
+    }
+    return ret;
+}
+
+// message processing callback method
+function processMessage(message) {
+    // if message was sent by self, discard
+    if (message.peerID === localID) return;
+    verboseLog("call  processMessage" + JSON.stringify(message));
+    if (message.ping) {
+        if (!peers[message.peerID]) { // peer has just entered the room
+            send(message.replyChannel, {pong : true});
+        } else { // hearbeat signal, reset associated watchdog timer
+            peers[message.peerID].lastHeartbeat = 0;
+        }
+    } else if (message.pong) { // peer has responded to first contact
+        if (createPeerAndStart(message.peerID, message.replyChannel) == 0) {
+            // send confirmation to start the call
+            send(message.replyChannel, {okstart : true});
+        }
+    } else if (message.okstart) { // confirmation received
+        var ret = createPeerAndStart(message.peerID, message.replyChannel);
+        if (ret === 0 ||
+            ret == 2 && localID > message.peerID) { // if a deadlock is detected, the peer with the larger localID will act as the initiator
+            // create WebRTC offer
+            peers[message.peerID].createOffer();
+        }
+    } else if (message.bye) { // peer is leaving the call
+        removePeer(message.peerID);
+    } else if (peers[message.peerID]) { // this is a WebRTC specific message, pass on for processing by the appropriate WRTCPeer object
+        verboseLog("to peer");
+        peers[message.peerID].processMessage(message);
+    }
+}
+</script>
+</body>
+</html>
