@@ -39,7 +39,7 @@ function processMessageOnChannel(strMessage, processMessageCallback, logCallback
         !messageMap[jsonMessage.multipart] && (messageMap[jsonMessage.multipart] = []);
         messageMap[jsonMessage.multipart].push(jsonMessage.payload);
         if (jsonMessage.last) { // call actual processing callback
-            var combinedMessage = JSON.parse(messageMap[jsonMessage.multipart].join());
+            var combinedMessage = JSON.parse(messageMap[jsonMessage.multipart].join(""));
             delete messageMap[jsonMessage.multipart];
             processMessageCallback(combinedMessage);
         }
