@@ -205,7 +205,7 @@ function processMessage(message) {
     } else if (message.okstart) { // confirmation received
         var ret = createPeerAndStart(message.peerID, message.replyChannel);
         if (ret === 0 ||
-            ret === 2 && localID > message.peerID) { // if a deadlock is detected, the peer with the larger localID will act as the initiator
+            ret === -2 && localID > message.peerID) { // if a deadlock is detected, the peer with the larger localID will act as the initiator
             // create WebRTC offer
             peers[message.peerID].createOffer();
         }
