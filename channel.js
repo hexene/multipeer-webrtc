@@ -3,7 +3,8 @@ var MAX_MESSAGE_LENGTH = 600;
 
 var pubnub = PUBNUB.init({
     publish_key   : 'pub-c-0b7da178-625c-4a8e-9546-9e3fb8efad88', // Use your publish api key
-    subscribe_key : 'sub-c-d01c0dee-3718-11e4-9f47-02ee2ddab7fe'  // Use your subsribe api key
+    subscribe_key : 'sub-c-d01c0dee-3718-11e4-9f47-02ee2ddab7fe',  // Use your subsribe api key
+    ssl : true
 });
 
 // send message on channel
